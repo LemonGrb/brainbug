@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import jsPDF from 'jspdf';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_KEY;
@@ -430,11 +431,7 @@ async function renderStoryDetail(storyId) {
     const { data: memberCount } = await db.rpc('member_count', { p_story_id: storyId });
     const roundNumber = Math.floor((turnCount || 0) / memberCount) + 1;
     const positionInRound = ((turnCount || 0) % memberCount) + 1;
-
-        console.log('TURN_COUNT raw:', turnCount, '| memberCount:', memberCount, '| round:', roundNumber, '| position:', positionInRound);
-
     const { data: wordCount } = await db.rpc('story_word_count', { p_story_id: storyId });
-
     const currentMember = (members || []).find(m => m.user_id === currentAuthorId);
     const currentUsername = currentMember?.profiles?.username || '(unknown)';
 
@@ -488,12 +485,20 @@ async function renderStoryDetail(storyId) {
       sum + (t.content?.split(/\s+/).filter(w => w.length > 0).length || 0), 0);
 
     finishedHTML = `
-      <div class="turn-banner" style="border-left-color:#6c6;">
+      <div class="turn-banner">
         Finished · ${totalWords} words · ${(turns || []).length} turns
       </div>
       <div class="visible-text-section">
         <div class="visible-text-label">The story</div>
         <div class="visible-text">${escapeHtml(fullText) || '<em>(empty)</em>'}</div>
+      </div>
+      <div style="margin-top:1.25rem;">
+        <h3>Export</h3>
+        <div class="row">
+          <button class="export-btn" data-format="txt">.txt</button>
+          <button class="export-btn" data-format="md">.md</button>
+          <button class="export-btn" data-format="pdf">.pdf</button>
+        </div>
       </div>
     `;
   }
@@ -617,6 +622,10 @@ async function renderStoryDetail(storyId) {
   }
 
   document.getElementById('delete-story-btn')?.addEventListener('click', () => deleteStory(storyId, story.title));
+
+    main.querySelectorAll('.export-btn').forEach(btn => {
+    btn.addEventListener('click', () => exportStory(storyId, btn.dataset.format));
+  });
 }
 
 
@@ -672,6 +681,152 @@ async function forceEndStory(storyId) {
     return;
   }
   await renderStoryDetail(storyId);
+}
+
+
+// Export PDF, MD, or txt
+async function exportStory(storyId, format) {
+  // Fetch everything we need.
+  const { data: story } = await db
+    .from('stories')
+    .select('title, visibility_rule, total_rounds, status, created_at')
+    .eq('id', storyId)
+    .single();
+
+  const { data: members } = await db
+    .from('story_members')
+    .select('role, profiles(username)')
+    .eq('story_id', storyId);
+
+  const { data: characters } = await db
+    .from('characters')
+    .select('name, notes')
+    .eq('story_id', storyId)
+    .order('created_at', { ascending: true });
+
+  const { data: plotIdeas } = await db
+    .from('plot_ideas')
+    .select('content')
+    .eq('story_id', storyId)
+    .order('created_at', { ascending: true });
+
+  const { data: turns } = await db
+    .from('turns')
+    .select('round_number, turn_in_round, content, skipped')
+    .eq('story_id', storyId)
+    .eq('skipped', false)
+    .order('round_number', { ascending: true })
+    .order('turn_in_round', { ascending: true });
+
+  const safeTitle = (story.title || 'story').replace(/[^\w\s-]/g, '').replace(/\s+/g, '_').toLowerCase();
+  const memberLine = (members || []).map(m => m.profiles?.username || '(unknown)').join(', ');
+  const storyText = (turns || []).map(t => t.content).join('\n\n');
+
+  if (format === 'txt') {
+    let out = `${story.title}\n${'='.repeat(story.title.length)}\n\n`;
+    out += `${story.total_rounds} rounds · ${story.visibility_rule.replace('_', ' ')} visibility\n`;
+    out += `Members: ${memberLine}\n\n`;
+    if ((characters || []).length) {
+      out += `CHARACTERS\n----------\n`;
+      characters.forEach(c => {
+        out += `\n${c.name}\n`;
+        if (c.notes) out += `${c.notes}\n`;
+      });
+      out += '\n';
+    }
+    if ((plotIdeas || []).length) {
+      out += `PLOT IDEAS\n----------\n`;
+      plotIdeas.forEach(p => { out += `- ${p.content}\n`; });
+      out += '\n';
+    }
+    out += `STORY\n-----\n\n${storyText}\n`;
+    downloadFile(`${safeTitle}.txt`, out, 'text/plain');
+  }
+  else if (format === 'md') {
+    let out = `# ${story.title}\n\n`;
+    out += `*${story.total_rounds} rounds · ${story.visibility_rule.replace('_', ' ')} visibility*\n\n`;
+    out += `**Members:** ${memberLine}\n\n`;
+    if ((characters || []).length) {
+      out += `## Characters\n\n`;
+      characters.forEach(c => {
+        out += `### ${c.name}\n\n`;
+        if (c.notes) out += `${c.notes}\n\n`;
+      });
+    }
+    if ((plotIdeas || []).length) {
+      out += `## Plot ideas\n\n`;
+      plotIdeas.forEach(p => { out += `- ${p.content}\n`; });
+      out += '\n';
+    }
+    out += `## Story\n\n${storyText}\n`;
+    downloadFile(`${safeTitle}.md`, out, 'text/markdown');
+  }
+  else if (format === 'pdf') {
+    const doc = new jsPDF({ unit: 'pt', format: 'letter' });
+    const margin = 72;          // 1 inch
+    const pageWidth = 612;
+    const pageHeight = 792;
+    const maxWidth = pageWidth - margin * 2;
+    let y = margin;
+
+    function addLine(text, size, bold = false) {
+      doc.setFont('Times', bold ? 'bold' : 'normal');
+      doc.setFontSize(size);
+      const lines = doc.splitTextToSize(text, maxWidth);
+      lines.forEach(line => {
+        if (y > pageHeight - margin) { doc.addPage(); y = margin; }
+        doc.text(line, margin, y);
+        y += size * 1.3;
+      });
+    }
+    function blank(height = 12) {
+      y += height;
+      if (y > pageHeight - margin) { doc.addPage(); y = margin; }
+    }
+
+    addLine(story.title, 22, true);
+    blank(6);
+    addLine(`${story.total_rounds} rounds · ${story.visibility_rule.replace('_', ' ')} visibility`, 11);
+    addLine(`Members: ${memberLine}`, 11);
+    blank();
+
+    if ((characters || []).length) {
+      addLine('Characters', 16, true);
+      blank(4);
+      characters.forEach(c => {
+        addLine(c.name, 13, true);
+        if (c.notes) addLine(c.notes, 11);
+        blank(6);
+      });
+      blank();
+    }
+
+    if ((plotIdeas || []).length) {
+      addLine('Plot ideas', 16, true);
+      blank(4);
+      plotIdeas.forEach(p => addLine(`• ${p.content}`, 11));
+      blank();
+    }
+
+    addLine('Story', 16, true);
+    blank(8);
+    storyText.split('\n\n').forEach(para => {
+      addLine(para, 12);
+      blank(8);
+    });
+
+    doc.save(`${safeTitle}.pdf`);
+  }
+}
+
+function downloadFile(filename, content, mime) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // Lets creator delete stories
@@ -893,6 +1048,7 @@ async function startStory(storyId) {
   }
 
   await renderStoryDetail(storyId);
+
 }
 
 // --- Invitations view ---
