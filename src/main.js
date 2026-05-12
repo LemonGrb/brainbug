@@ -19,6 +19,16 @@ function clearChannels() {
   activeChannels = [];
 }
 
+function clearStoryChannels() {
+  activeChannels = activeChannels.filter(ch => {
+    if (ch.topic.startsWith('realtime:story_')) {
+      db.removeChannel(ch);
+      return false;
+    }
+    return true;
+  });
+}
+
 // --- Helpers ---
 
 function escapeHtml(str) {
@@ -193,13 +203,7 @@ async function switchView(name) {
   currentStoryId = null;
 
   // Drop story-specific subscriptions when leaving the detail view.
-  activeChannels = activeChannels.filter(ch => {
-    if (ch.topic.startsWith('realtime:story_')) {
-      db.removeChannel(ch);
-      return false;
-    }
-    return true;
-  });
+  clearStoryChannels();
 
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.view === name);
@@ -338,14 +342,7 @@ function renderCreateStoryView() {
 async function renderStoryDetail(storyId) {
   currentStoryId = storyId;
 
-  // Drop subscriptions from any previously-open story (but keep invitations channel).
-  activeChannels = activeChannels.filter(ch => {
-    if (ch.topic.startsWith('realtime:story_')) {
-      db.removeChannel(ch);
-      return false;
-    }
-    return true;
-  });
+  clearStoryChannels();
 
   // Subscribe to all relevant changes for THIS story.
   const channel = db
@@ -835,13 +832,8 @@ async function deleteStory(storyId, title) {
   if (!confirmed) return;
 
   // Clear story subscription before deleting so we don't get phantom realtime events.
-  activeChannels = activeChannels.filter(ch => {
-    if (ch.topic.startsWith('realtime:story_')) {
-      db.removeChannel(ch);
-      return false;
-    }
-    return true;
-  });
+  clearStoryChannels();
+
   currentStoryId = null;
 
   const { error } = await db.rpc('delete_story', { p_story_id: storyId });
