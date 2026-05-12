@@ -10,6 +10,14 @@ let currentSession = null;
 let currentView = 'stories';
 let currentStoryId = null; // when drilled into a specific story
 
+// Track active realtime subscriptions so we can clean them up.
+let activeChannels = [];
+
+function clearChannels() {
+  activeChannels.forEach(ch => db.removeChannel(ch));
+  activeChannels = [];
+}
+
 // --- Helpers ---
 
 function escapeHtml(str) {
@@ -76,21 +84,40 @@ db.auth.onAuthStateChange((event, session) => {
 
 async function route() {
   if (!currentSession) {
+    clearChannels();
     showAuthScreen();
     return;
   }
 
   const profile = await getProfile(currentSession.user.id);
   if (!profile || isAutoUsername(profile.username)) {
-    setUserLabel(currentSession.user.email); // fallback while picking username
+    setUserLabel(currentSession.user.email);
     showUsernameScreen();
     return;
   }
 
   setUserLabel(profile.username);
   showAppShell();
+  subscribeToInvitations();
   await refreshInvitationCount();
   await switchView(currentView);
+}
+
+function subscribeToInvitations() {
+  // Only subscribe once per session.
+  if (activeChannels.some(c => c.topic === 'realtime:invitations')) return;
+
+  const channel = db
+    .channel('invitations')
+    .on('postgres_changes',
+      { event: '*', schema: 'public', table: 'story_invitations', filter: `invitee_id=eq.${currentSession.user.id}` },
+      () => {
+        refreshInvitationCount();
+        if (currentView === 'invitations') renderInvitationsView();
+      }
+    )
+    .subscribe();
+  activeChannels.push(channel);
 }
 
 async function getProfile(userId) {
@@ -163,6 +190,16 @@ document.querySelectorAll('.nav-btn[data-view]').forEach(btn => {
 async function switchView(name) {
   currentView = name;
   currentStoryId = null;
+
+  // Drop story-specific subscriptions when leaving the detail view.
+  activeChannels = activeChannels.filter(ch => {
+    if (ch.topic.startsWith('realtime:story_')) {
+      db.removeChannel(ch);
+      return false;
+    }
+    return true;
+  });
+
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.view === name);
   });
@@ -174,7 +211,7 @@ async function switchView(name) {
 // --- Stories view ---
 
 async function renderStoriesView() {
-  const main = document.getElementById('main-area');
+  const main = document.getElementById('main-area-inner');
   main.innerHTML = '<div id="view-loading">Loading...</div>';
 
   const userId = currentSession.user.id;
@@ -225,7 +262,7 @@ function renderStoryItem(story) {
 // --- Create story view ---
 
 function renderCreateStoryView() {
-  const main = document.getElementById('main-area');
+  const main = document.getElementById('main-area-inner');
   main.innerHTML = `
     <h2>Create a story</h2>
     <div class="form-stack">
@@ -299,17 +336,55 @@ function renderCreateStoryView() {
 
 async function renderStoryDetail(storyId) {
   currentStoryId = storyId;
-  const main = document.getElementById('main-area');
+
+  // Drop subscriptions from any previously-open story (but keep invitations channel).
+  activeChannels = activeChannels.filter(ch => {
+    if (ch.topic.startsWith('realtime:story_')) {
+      db.removeChannel(ch);
+      return false;
+    }
+    return true;
+  });
+
+  // Subscribe to all relevant changes for THIS story.
+  const channel = db
+    .channel(`story_${storyId}`)
+    .on('postgres_changes',
+      { event: '*', schema: 'public', table: 'turns', filter: `story_id=eq.${storyId}` },
+      () => { if (currentStoryId === storyId) renderStoryDetail(storyId); }
+    )
+    .on('postgres_changes',
+      { event: '*', schema: 'public', table: 'characters', filter: `story_id=eq.${storyId}` },
+      () => { if (currentStoryId === storyId) renderStoryDetail(storyId); }
+    )
+    .on('postgres_changes',
+      { event: '*', schema: 'public', table: 'plot_ideas', filter: `story_id=eq.${storyId}` },
+      () => { if (currentStoryId === storyId) renderStoryDetail(storyId); }
+    )
+    .on('postgres_changes',
+      { event: 'UPDATE', schema: 'public', table: 'stories', filter: `id=eq.${storyId}` },
+      () => { if (currentStoryId === storyId) renderStoryDetail(storyId); }
+    )
+    .on('postgres_changes',
+      { event: '*', schema: 'public', table: 'story_members', filter: `story_id=eq.${storyId}` },
+      () => { if (currentStoryId === storyId) renderStoryDetail(storyId); }
+    )
+    .subscribe();
+  activeChannels.push(channel);
+
+  const main = document.getElementById('main-area-inner');
   main.innerHTML = '<div id="view-loading">Loading...</div>';
 
   const { data: story, error: storyError } = await db
     .from('stories')
     .select('id, title, visibility_rule, total_rounds, status, creator_id')
     .eq('id', storyId)
-    .single();
+    .maybeSingle();
 
-  if (storyError) {
-    main.innerHTML = `<div style="color:#c88;">Error: ${escapeHtml(storyError.message)}</div>`;
+  if (storyError || !story) {
+    // Story was deleted, or no access — go back to the list.
+    currentStoryId = null;
+    await switchView('stories');
     return;
   }
 
@@ -392,13 +467,8 @@ async function renderStoryDetail(storyId) {
           Round ${roundNumber} of ${story.total_rounds} · 
           Waiting on <strong>${escapeHtml(currentUsername)}</strong> · 
           Story so far: ${wordCount || 0} words
-          ${canSkip ? `<button id="skip-turn-btn" class="link-btn" style="margin-left:1rem; color:#c88;">Skip player</button>` : ''}
+          ${canSkip ? `<button id="skip-turn-btn" class="link-btn" style="margin-left:1rem;">Skip player</button>` : ''}
         </div>
-        ${isCreator ? `
-          <div style="margin-top:1rem;">
-            <button id="force-end-btn" class="link-btn" style="color:#c88;">Force end story</button>
-          </div>
-        ` : ''}
       `;
     }
   }
@@ -491,9 +561,17 @@ async function renderStoryDetail(storyId) {
     ` : ''}
 
     ${isCreator ? `
-      <div style="margin-top:2rem; padding-top:1.5rem; border-top:1.5px dashed var(--line);">
-        <button id="delete-story-btn" style="color:var(--accent-dark);">Delete story</button>
-        <div style="font-size:0.85rem; color:var(--ink-dim); margin-top:0.5rem;">
+      <div style="margin-top:2rem; padding-top:1.5rem; border-top:2px dashed var(--navy);">
+        ${inProgress ? `
+          <div style="margin-bottom:0.85rem;">
+            <button id="force-end-btn">Force end story</button>
+            <div style="font-size:0.9rem; color:var(--ink-dim); margin-top:0.4rem; font-family:'VT323', monospace;">
+              Ends the story immediately and reveals the full text to everyone.
+            </div>
+          </div>
+        ` : ''}
+        <button id="delete-story-btn">Delete story</button>
+        <div style="font-size:0.9rem; color:var(--ink-dim); margin-top:0.4rem; font-family:'VT323', monospace;">
           Permanently deletes the story, its turns, characters, and invitations.
         </div>
       </div>
@@ -601,13 +679,23 @@ async function deleteStory(storyId, title) {
   const confirmed = confirm(`Delete "${title}"?\n\nThis permanently deletes the story, all submitted turns, characters, plot ideas, and pending invitations. It cannot be undone.`);
   if (!confirmed) return;
 
+  // Clear story subscription before deleting so we don't get phantom realtime events.
+  activeChannels = activeChannels.filter(ch => {
+    if (ch.topic.startsWith('realtime:story_')) {
+      db.removeChannel(ch);
+      return false;
+    }
+    return true;
+  });
+  currentStoryId = null;
+
   const { error } = await db.rpc('delete_story', { p_story_id: storyId });
   if (error) {
     alert('Failed to delete: ' + error.message);
     return;
   }
 
-  await renderStoriesView();
+  await switchView('stories');
 }
 
 function renderCharacterItem(c, story, isCreator, inBrainstorm) {
@@ -810,7 +898,7 @@ async function startStory(storyId) {
 // --- Invitations view ---
 
 async function renderInvitationsView() {
-  const main = document.getElementById('main-area');
+  const main = document.getElementById('main-area-inner');
   main.innerHTML = '<div id="view-loading">Loading...</div>';
 
   const { data: invites, error } = await db

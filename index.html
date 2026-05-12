@@ -7,7 +7,7 @@
 <body>
   <!-- Full-page screen: auth -->
   <div id="screen-auth">
-    <h1>Brainbug</h1>
+    <h1>brainbug</h1>
     <input id="email" type="email" placeholder="email">
     <input id="password" type="password" placeholder="password">
     <div class="row" style="gap:0.5rem;">
@@ -31,20 +31,24 @@
   <!-- Main app shell: side panel + main area -->
   <div id="app-shell" style="display: none;">
     <aside id="side-panel">
-      <div id="side-header">
-        <strong>Brainbug</strong>
-        <span class="user-email"></span>
-        <button class="logout-btn" style="font-size:0.78rem; padding:0.3rem 0.6rem; box-shadow:1px 1px 0 var(--line);">Log out</button>
-      </div>
+     <div id="side-header">
+        <strong>brainbug</strong>
+     </div>
       <nav id="side-nav">
         <button class="nav-btn" data-view="stories">Stories</button>
         <button class="nav-btn" data-view="invitations">Invitations <span id="invitations-count" class="count-badge" style="display:none;">0</span></button>
-        <button class="nav-btn" disabled title="Coming later">Friends</button>
+         <button class="nav-btn" disabled title="Coming later">Friends</button>
       </nav>
+      <div id="side-footer">
+        <span class="user-email"></span>
+        <button class="logout-btn">Log out</button>
+      </div>
     </aside>
     <main id="main-area">
-     <div id="view-loading">Loading...</div>
-   </main>
+      <div id="main-area-inner">
+        <div id="view-loading">Loading...</div>
+      </div>
+    </main>
   </div>
 
   <script type="module" src="/src/main.js"></script>
