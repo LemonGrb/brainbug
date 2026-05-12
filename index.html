@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Brainbug</title>
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+  <!-- Full-page screen: auth -->
+  <div id="screen-auth">
+    <h1>Brainbug</h1>
+    <input id="email" type="email" placeholder="email">
+    <input id="password" type="password" placeholder="password">
+    <div class="row" style="gap:0.5rem;">
+      <button id="signup-btn">Sign up</button>
+      <button id="login-btn" class="primary">Log in</button>
+    </div>
+    <div id="auth-message"></div>
+  </div>
+
+  <!-- Full-page screen: pick username -->
+  <div id="screen-username" style="display: none;">
+    <div id="username-content">
+      <h2>Pick a username</h2>
+      <p>This is how others will find and invite you.</p>
+      <input id="username-input" type="text" placeholder="username" autocomplete="off">
+      <button id="save-username-btn" class="primary">Save</button>
+      <div id="username-message"></div>
+    </div>
+  </div>
+
+  <!-- Main app shell: side panel + main area -->
+  <div id="app-shell" style="display: none;">
+    <aside id="side-panel">
+      <div id="side-header">
+        <strong>Brainbug</strong>
+        <span class="user-email"></span>
+        <button class="logout-btn" style="font-size:0.78rem; padding:0.3rem 0.6rem; box-shadow:1px 1px 0 var(--line);">Log out</button>
+      </div>
+      <nav id="side-nav">
+        <button class="nav-btn" data-view="stories">Stories</button>
+        <button class="nav-btn" data-view="invitations">Invitations <span id="invitations-count" class="count-badge" style="display:none;">0</span></button>
+        <button class="nav-btn" disabled title="Coming later">Friends</button>
+      </nav>
+    </aside>
+    <main id="main-area">
+     <div id="view-loading">Loading...</div>
+   </main>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
